@@ -1,11 +1,16 @@
-"""The autoplay director: plays ClanGen like a patient, attentive player.
+"""The autoplay director: lets the clan live its life on the camp screen.
 
-It drives the real screens (patrol screen, events screen, dens) by posting the same
-pygame_gui button events a mouse click would, so every bit of game logic runs
-exactly as it does for a human. Each moon it:
+The camp stays on screen. Cats wander, visit their mates, follow their mentors and
+gather in the clearing (see camp_life.py), and everything the player would normally
+do through menus happens as a scene in camp instead:
 
-  camp (thought bubbles) -> leadership (focus / leader's den) -> patrols
-  -> timeskip -> the moon's story, card by card -> a headline profile spotlight
+  dawn: the moon's story, with the cats involved stepping into the clearing
+  -> the leader announces decisions (focus, other clans, outsiders)
+  -> patrols gather, walk out of camp, and come home with their tale
+  -> dusk: the cats bed down, night falls, and the moon passes
+
+Under the hood it calls the same game code the menus do (Patrol, events.one_moon,
+the den decisions), so the simulation is exactly ClanGen's own.
 
 Any click, scroll or key press hands control to the player immediately; after a
 stretch of idleness the director quietly picks the story back up.
@@ -19,26 +24,30 @@ or failure the next moon can start from a known screen.
 import logging
 import os
 import random
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+import i18n
 import pygame
-import pygame_gui
 
 import scripts.game_structure.screen_settings as screen_settings
-from scripts.autoplay import brain, story
+from scripts import events
+from scripts.autoplay import brain, leader_actions, story
+from scripts.autoplay.camp_life import CampLife
 from scripts.autoplay.clan_factory import found_random_clan
 from scripts.autoplay.config import load_config
-from scripts.autoplay.overlay import Bubble, Card, Overlay, clean_text
+from scripts.autoplay.overlay import Card, Overlay, clean_text
 from scripts.autoplay.panels import Panels
 from scripts.cat.cats import Cat
 from scripts.cat.enums import CatRank
 from scripts.clan_package.get_clan_cats import get_living_clan_cat_count
 from scripts.clan_package.settings import get_clan_setting, set_clan_setting
 from scripts.events_module.patrol.enums import PatrolChoice
+from scripts.events_module.patrol.patrol import Patrol
 from scripts.events_module.thoughts.generate_thoughts import get_new_thought
-from scripts.game_structure import game
+from scripts.game_structure import constants, game
 from scripts.game_structure.game import Switch, switch_get_value
 from scripts.game_structure.game.switches import switch_set_value
 from scripts.screens.enums import GameScreen
@@ -67,6 +76,14 @@ _PATROL_LABELS = {
     "med": "herb-gathering trip",
 }
 
+_PATROL_CALLS = {
+    "general": ["Let's walk the territory.", "Who's coming on patrol?", "Let's see what the forest holds today."],
+    "hunting": ["The fresh-kill pile won't fill itself.", "Who's hungry? Let's hunt.", "Let's bring back some prey."],
+    "border": ["Let's check the scent markers.", "Time to walk the borders.", "Let's make sure the borders are safe."],
+    "training": ["Training time!", "Let's see what you've learned.", "Today we practise."],
+    "med": ["We're low on herbs.", "Let's gather some herbs.", "The herb store needs filling."],
+}
+
 _SPEEDS = (0.5, 1.0, 2.0, 4.0)
 
 # dev aid: CLANGEN_AUTOPLAY_SHOTS=/some/dir saves a screenshot every few seconds
@@ -89,8 +106,24 @@ class Until:
         self.ok = False
 
 
-class _Abort(Exception):
-    pass
+class _Job:
+    """Runs a function on a worker thread so the camp keeps moving meanwhile."""
+
+    def __init__(self, fn, *args):
+        self.result = None
+        self.error: Optional[BaseException] = None
+        self.thread = threading.Thread(target=self._run, args=(fn, args), daemon=True)
+        self.thread.start()
+
+    def _run(self, fn, args):
+        try:
+            self.result = fn(*args)
+        except BaseException as e:  # noqa: BLE001 - reported on the main thread
+            self.error = e
+
+    @property
+    def done(self) -> bool:
+        return not self.thread.is_alive()
 
 
 class Director:
@@ -102,6 +135,8 @@ class Director:
 
         self.overlay = Overlay()
         self.panels = Panels()
+        self.camp = CampLife()
+        self.camp.say = self._actor_say
         self.mode = "auto" if self.enabled else "off"
         self.last_input = 0.0
 
@@ -113,9 +148,11 @@ class Director:
 
         # story state survives interruptions
         self.pending_cards: list[Card] = []
-        self.pending_headline = (None, "")
         self.progress = {}
+        self.jobs: list[_Job] = []
+        self._patrol = None  # (Patrol, label) begun but not yet resolved
         self._last_thought_cat = None
+        self._next_thought = 2.0
         self._last_shot = 0.0
         self._shot_n = 0
         if os.environ.get("CLANGEN_AUTOPLAY_SPEED"):
@@ -136,16 +173,15 @@ class Director:
             self.pending_cards = self._founding_cards()
         else:
             self.pending_cards = [story.title_card()]
-            self.pending_cards[0].header = f"Moon {game.clan.age}"
         self._go(GameScreen.CAMP)
 
     def on_clan_loaded(self):
         """The player switched clans: forget anything tied to the old one."""
         self._drop_task()
         self.pending_cards.clear()
-        self.pending_headline = (None, "")
         self.progress = {}
         self.panels.clear()
+        self.camp.detach()
 
     def observe_event(self, event):
         hk = self.cfg["hotkeys"]
@@ -167,8 +203,17 @@ class Director:
                 self._enter_manual()
 
     def update(self, dt: float):
-        self.overlay.update(dt * self.speed if self.mode == "auto" else dt)
+        scaled = dt * self.speed if self.mode == "auto" else dt
+        self.overlay.update(scaled)
         self.panels.update(dt)
+
+        on_camp = game.current_screen == GameScreen.CAMP and not game.switch_screens
+        if on_camp and self.camp.sync(self._screen(GameScreen.CAMP)):
+            self.camp.update(scaled, ambient=self.camp.night_target == 0 and self.mode != "off")
+            if self.mode != "off":
+                self._ambient_thoughts(scaled)
+        elif not on_camp:
+            self.camp.detach()
 
         if self.mode == "manual":
             idle = time.monotonic() - self.last_input
@@ -185,11 +230,10 @@ class Director:
 
     def draw(self, surface: pygame.Surface):
         self.panels.draw(surface, self.overlay.hud_text)
-        self.overlay.draw(
-            surface,
-            show_story=self.mode == "auto",
-            show_bubbles=game.current_screen == GameScreen.CAMP and not game.switch_screens,
-        )
+        on_camp = game.current_screen == GameScreen.CAMP and not game.switch_screens
+        if on_camp:
+            self.camp.draw(surface)
+        self.overlay.draw(surface, show_story=self.mode == "auto", show_bubbles=on_camp)
         if _SHOT_DIR:
             now = time.monotonic()
             if now - self._last_shot >= _SHOT_EVERY:
@@ -236,6 +280,23 @@ class Director:
         self.task = None
         self.wait = None
         self.caption = ""
+        self._settle_patrol()
+        self.camp.reset()
+
+    def _settle_patrol(self):
+        """A patrol that already set out still has to come home with an outcome."""
+        for job in self.jobs:
+            job.thread.join(timeout=5)
+        self.jobs = [j for j in self.jobs if not j.done]
+        if self._patrol is None:
+            return
+        patrol, label = self._patrol
+        self._patrol = None
+        try:
+            text, results, _, _ = patrol.proceed_patrol(PatrolChoice.PROCEED)
+            self.panels.add(label.capitalize(), clean_text(f"{text} {results}"), (96, 110, 70))
+        except Exception:
+            logger.exception("Autoplay: couldn't finish an interrupted patrol")
 
     def _skip(self):
         if self.overlay.card:
@@ -276,7 +337,7 @@ class Director:
             except Exception:
                 ok = False
             if not ok:
-                w.elapsed += dt
+                w.elapsed += dt * self.speed
                 if w.elapsed < w.timeout:
                     return
             w.ok = ok
@@ -298,6 +359,8 @@ class Director:
 
     def _recover(self):
         self.overlay.clear_card()
+        self._settle_patrol()
+        self.camp.reset()
         yield Wait(2)
         self._close_windows()
         yield from self._goto(GameScreen.CAMP)
@@ -318,25 +381,10 @@ class Director:
         self._go(target)
         yield Until(lambda: game.current_screen == target and not game.switch_screens, 5)
 
-    def _press(self, element, kind=pygame_gui.UI_BUTTON_START_PRESS):
-        if element is None:
-            return False
-        try:
-            if not element.is_enabled:
-                return False
-            self.overlay.add_ripple(element.rect.center)
-        except AttributeError:
-            pass
-        pygame.event.post(
-            pygame.event.Event(
-                kind,
-                {
-                    "ui_element": element,
-                    "ui_object_id": getattr(element, "most_specific_combined_id", ""),
-                },
-            )
-        )
-        return True
+    def _in_camp(self):
+        """Make sure we're looking at camp with the cats attached."""
+        yield from self._goto(GameScreen.CAMP)
+        yield Until(lambda: self.camp.camp is not None, 2)
 
     def _close_windows(self):
         try:
@@ -346,14 +394,12 @@ class Director:
             logger.exception("Autoplay: couldn't close open windows")
 
     def _work_in_flight(self) -> bool:
-        es = game.all_screens.get(GameScreen.EVENTS)
-        ps = game.all_screens.get(GameScreen.PATROL)
-        threads = [
-            getattr(es, "events_thread", None),
-            getattr(ps, "start_patrol_thread", None),
-            getattr(ps, "proceed_patrol_thread", None),
-        ]
-        return any(t is not None and t.is_alive() for t in threads)
+        return any(not j.done for j in self.jobs)
+
+    def _job(self, fn, *args) -> _Job:
+        job = _Job(fn, *args)
+        self.jobs = [j for j in self.jobs if not j.done] + [job]
+        return job
 
     def _moon_progress(self) -> dict:
         if self.progress.get("moon") != (game.clan.save_id, game.clan.age):
@@ -366,9 +412,56 @@ class Director:
             }
         return self.progress
 
-    @staticmethod
-    def _read(text: str, cps: float, minimum: float = 3.0) -> float:
-        return story.reading_time(text or "", cps, minimum)
+    def _read(self, text: str, minimum: float = 3.0) -> float:
+        return story.reading_time(text or "", float(self.cfg["pacing"]["reading_cps"]), minimum)
+
+    def _actor_say(self, actor, text: str, duration: float = 4.2):
+        cat = actor.cat
+        if cat is not None:
+            self.overlay.add_bubble(self.camp.bubble_for(actor, str(cat.name), text, duration))
+
+    def _say(self, cat, text: str, duration: float = 4.5) -> bool:
+        acts = self.camp.present([cat.ID]) if cat is not None else []
+        if not acts:
+            return False
+        self._actor_say(acts[0], text, duration)
+        return True
+
+    def _show(self, card: Card):
+        """Show a card and wait for it, logging it in the chronicle."""
+        self.overlay.show_card(card)
+        if card.style != "title":
+            text = card.text + (f" {card.footer}" if card.footer else "")
+            self.panels.add(card.header, text, card.accent, card.cats[0] if card.cats else None)
+        while not card.done:
+            yield Wait(0.1)
+        self.overlay.clear_card()
+        yield Wait(0.4)
+
+    def _ambient_thoughts(self, dt: float):
+        """Now and then a cat's current thought floats above its head."""
+        if self.camp.night > 0.3 or self.overlay.card is not None and self.overlay.card.style == "major":
+            return
+        self._next_thought -= dt
+        if self._next_thought > 0:
+            return
+        interval = float(self.cfg["pacing"]["thought_interval"])
+        self._next_thought = interval * random.uniform(0.8, 1.6)
+        acts = [a for a in self.camp.present() if a.cat_id != self._last_thought_cat]
+        if not acts:
+            return
+        actor = random.choice(acts)
+        cat = actor.cat
+        if cat is None:
+            return
+        try:
+            if not cat.thought or random.random() < 0.3:
+                get_new_thought(cat, cat.next_thought_type)
+        except Exception:
+            return
+        if cat.thought:
+            self._last_thought_cat = cat.ID
+            self._actor_say(actor, str(cat.thought))
 
     # ================================================================ the show
 
@@ -379,83 +472,55 @@ class Director:
                 yield from self._scene_game_over()
                 continue
 
+            yield from self._in_camp()
+
             if self.pending_cards:
                 yield from self._scene_story()
                 continue
 
             prog = self._moon_progress()
             if not prog["camp"]:
-                yield from self._scene_camp(pace["camp_seconds"])
+                yield from self._scene_idle(float(pace["camp_seconds"]))
                 prog["camp"] = True
             if not prog["leadership"]:
                 prog["leadership"] = True
                 yield from self._scene_leadership()
             yield from self._scene_patrols()
+            yield from self._scene_idle(float(pace["camp_seconds"]) * 0.6, "the clan rests")
             yield from self._scene_timeskip()
 
-    # ---------------------------------------------------------------- camp
-
-    def _scene_camp(self, seconds: float, caption: str = "resting in camp"):
-        yield from self._goto(GameScreen.CAMP)
+    def _scene_idle(self, seconds: float, caption: str = "life in camp"):
         self.caption = caption
-        interval = float(self.cfg["pacing"]["thought_interval"])
-        t, next_thought = 0.0, 1.2
-        while t < seconds:
-            yield Wait(0.25)
-            t += 0.25
-            if t >= next_thought:
-                self._spawn_thought()
-                next_thought += interval * random.uniform(0.7, 1.3)
-
-    def _spawn_thought(self):
-        camp = self._screen(GameScreen.CAMP)
-        buttons = [b for b in getattr(camp, "cat_buttons", []) if b.visible]
-        if not buttons:
-            return
-        choices = [b for b in buttons if b.cat_id != self._last_thought_cat] or buttons
-        button = random.choice(choices)
-        cat = Cat.fetch_cat(button.cat_id)
-        if not isinstance(cat, Cat):
-            return
-        if not cat.thought:
-            try:
-                get_new_thought(cat, cat.next_thought_type)
-            except Exception:
-                return
-        if not cat.thought:
-            return
-        self._last_thought_cat = cat.ID
-        self.overlay.add_bubble(
-            Bubble(button.rect.copy(), str(cat.name), str(cat.thought), duration=4.2)
-        )
+        yield Wait(seconds)
 
     # ---------------------------------------------------------------- story
 
     def _scene_story(self):
-        yield from self._goto(GameScreen.CAMP)
         self.caption = "telling the moon's story"
         while self.pending_cards:
             card = self.pending_cards.pop(0)
-            self.overlay.show_card(card)
-            if card.style != "title":
-                self.panels.add(card.header, card.text, card.accent, card.cats[0] if card.cats else None)
-            while not card.done:
-                yield Wait(0.1)
-            self.overlay.clear_card()
-            yield Wait(0.35)
+            staged = self._stage(card)
+            yield from self._show(card)
+            if staged:
+                self.camp.release(staged)
 
-        cat, caption = self.pending_headline
-        self.pending_headline = (None, "")
-        if cat is not None and self.cfg["story"]["profile_spotlights"]:
-            yield from self._scene_profile(cat, caption)
-
-    def _scene_profile(self, cat, caption: str, seconds: float = 10.0):
-        switch_set_value(Switch.cat, cat.ID)
-        game.last_screen_forProfile = GameScreen.CAMP
-        yield from self._goto(GameScreen.PROFILE)
-        self.caption = caption
-        yield Wait(seconds)
-        yield from self._goto(GameScreen.CAMP)
+    def _stage(self, card: Card) -> list:
+        """The cats a story is about step into the clearing while it's told."""
+        if card.style != "major" or not card.cats:
+            return []
+        ids = [c.ID for c in card.cats if isinstance(c, Cat)]
+        present = self.camp.present(ids)
+        if not present:
+            return []
+        if "Ceremony" in card.header or "Leader" in card.header or "Deputy" in card.header:
+            leader = game.clan.leader
+            if leader is not None and leader.ID not in ids and self.camp.present([leader.ID]):
+                self.camp.gather([leader.ID], self.camp.leader_spot, radius=0)
+                ids.append(leader.ID)
+        hub = self.camp.hub
+        self.camp.gather([a.cat_id for a in present], (hub[0], hub[1] + 10), radius=30)
+        self.camp.highlight(ids, card.duration)
+        return ids
 
     def _founding_cards(self) -> list[Card]:
         clan = game.clan
@@ -477,246 +542,244 @@ class Director:
                 accent=story.GOLD,
                 cats=ranks,
                 style="major",
-                duration=self._read(text, self.cfg["pacing"]["reading_cps"], 6),
+                duration=self._read(text, 6),
             ),
         ]
 
     # ---------------------------------------------------------------- leadership
 
     def _scene_leadership(self):
+        leader = game.clan.leader
+        if leader is None or not leader.status.alive_in_player_clan or not leader.can_work():
+            return
         has_meds = any(
             c.status.rank.is_any_medicine_rank() and c.status.alive_in_player_clan and c.can_work()
             for c in Cat.all_cats_list
         )
+        decisions = []
         if brain.focus_change_allowed() and random.random() < 0.6:
-            current = next((f for f in brain.FOCUS_ALL if get_clan_setting(f)), "business_as_usual")
-            code, target = brain.choose_focus(current, has_meds)
+            code, target = brain.choose_focus(leader_actions.current_focus(), has_meds)
             if code:
-                yield from self._scene_focus(code, target)
-
-        leader = game.clan.leader
-        if (
-            leader
-            and leader.status.alive_in_player_clan
-            and game.clan.all_other_clans
-            and random.random() < 0.45
-        ):
-            yield from self._scene_leader_den(leader)
-
-    def _scene_focus(self, code: str, target):
-        yield from self._goto(GameScreen.WARRIOR_DEN)
-        self.caption = "the leader weighs the clan's focus"
-        wd = self._screen(GameScreen.WARRIOR_DEN)
-        yield Wait(2.5)
-        button = getattr(wd, "focus_buttons", {}).get(code)
-        if button is not None and self._press(button):
-            yield Wait(2.5)
-            if code in wd.other_clan_settings:
-                if target is not None:
-                    game.clan.clans_in_focus = [target.name]
-                    wd.save_focus()
-            else:
-                self._press(wd.save_button)
-            self.caption = f"new focus: {code.replace('_', ' ')}"
-            yield Wait(3.0)
-        yield from self._goto(GameScreen.CAMP)
-
-    def _scene_leader_den(self, leader):
-        yield from self._goto(GameScreen.LEADER_DEN)
-        ld = self._screen(GameScreen.LEADER_DEN)
-        self.caption = f"{leader.name} considers the other clans"
-        yield Wait(2.5)
-        if ld.no_leader:
-            yield from self._goto(GameScreen.CAMP)
+                decisions.append(("focus", code, target))
+        if game.clan.all_other_clans and random.random() < 0.45:
+            decisions.append(("clan", None, None))
+        if random.random() < 0.3 and leader_actions.nearby_outsiders():
+            decisions.append(("outsider", None, None))
+        if not decisions:
             return
 
-        clans = game.clan.all_other_clans
-        weights = [
-            2.0 if c in brain.hostile_clans() or c in brain.friendly_clans() else 1.0
-            for c in clans
-        ]
-        idx = random.choices(range(len(clans)), weights)[0]
-        if self._press(ld.other_clan_selection_elements.get(f"button{idx}")):
-            yield Wait(2.0)
-        stance = brain.choose_clan_interaction(leader, ld.focus_clan)
-        if self._press(ld.focus_frame_elements.get(f"{stance}_interaction")):
-            self.caption = f"{leader.name} chooses to {'provoke' if stance == 'negative' else 'befriend'} {ld.focus_clan.name}"
-            yield Wait(4.0)
+        self.caption = f"{leader.name} addresses the clan"
+        acts = self.camp.gather([leader.ID], self.camp.leader_spot, radius=0, speed=1.0)
+        yield Until(lambda: self.camp.arrived(acts), 12)
+        self.camp.highlight([leader.ID], 4)
 
-        if random.random() < 0.35 and self._press(ld.focus_frame_elements.get("outsiders_tab")):
-            self.caption = f"{leader.name} thinks about the cats beyond the borders"
-            yield Wait(2.0)
-            outsiders = list(ld.outsider_cat_buttons.values())
-            if outsiders and self._press(random.choice(outsiders)):
-                yield Wait(2.0)
-                available = {
-                    b.text.replace("screens.leader_den.", ""): b
-                    for b in ld.focus_button.values()
-                    if b.alive() and b.visible and b.is_enabled
-                }
-                action = brain.choose_outsider_action(leader, list(available))
-                if action and self._press(available[action]):
-                    yield Wait(4.0)
-        yield from self._goto(GameScreen.CAMP)
+        for kind, code, target in decisions:
+            if kind == "focus":
+                if not leader_actions.apply_focus(code, target):
+                    continue
+                name = i18n.t(f"settings.{code}")
+                line = f"From now on, our focus is {name.lower()}."
+                if target is not None:
+                    line = f"{name}: {target.name}Clan. That is my decision."
+                self._say(leader, line, 5)
+                self.caption = f"new focus: {name.lower()}"
+                yield Wait(2.5)
+                yield from self._show(
+                    Card(
+                        text=f"{leader.name} sets the clan's focus to {name.lower()}"
+                        + (f", aimed at {target.name}Clan." if target is not None else "."),
+                        header="The Leader's Word",
+                        accent=story.GOLD,
+                        cats=[leader],
+                        style="minor",
+                        duration=self._read(name, 4),
+                    )
+                )
+            elif kind == "clan":
+                clans = game.clan.all_other_clans
+                weights = [
+                    2.0 if c in brain.hostile_clans() or c in brain.friendly_clans() else 1.0
+                    for c in clans
+                ]
+                other = random.choices(clans, weights)[0]
+                stance = brain.choose_clan_interaction(leader, other)
+                text = leader_actions.clan_interaction(leader, other, stance)
+                if not text:
+                    continue
+                self.caption = f"{leader.name} considers {other.name}Clan"
+                self._say(leader, f"We must deal with {other.name}Clan.", 4)
+                yield Wait(2.5)
+                yield from self._show(
+                    Card(
+                        text=clean_text(text),
+                        header="Beyond the Borders",
+                        accent=story.PURPLE,
+                        cats=[leader],
+                        style="minor",
+                        duration=self._read(text, 4),
+                    )
+                )
+            elif kind == "outsider":
+                result = leader_actions.outsider_interaction(leader)
+                if not result:
+                    continue
+                cat, text = result
+                self.caption = f"{leader.name} thinks about {cat.name}"
+                yield from self._show(
+                    Card(
+                        text=clean_text(text),
+                        header="Outsiders",
+                        accent=story.BROWN,
+                        cats=[leader, cat],
+                        style="minor",
+                        duration=self._read(text, 4),
+                    )
+                )
+        self.camp.release([leader.ID])
 
     # ---------------------------------------------------------------- patrols
 
+    @staticmethod
+    def _able_cats() -> list:
+        able = []
+        for cat in Cat.all_cats_list:
+            if (
+                cat.ID not in game.patrolled
+                and cat.status.rank.is_allowed_to_patrol()
+                and cat.status.alive_in_player_clan
+                and cat.can_work()
+            ):
+                if cat.status.rank == CatRank.NEWBORN and not constants.CONFIG["fun"]["newborns_can_patrol"]:
+                    continue
+                able.append(cat)
+        return able
+
     def _scene_patrols(self):
         prog = self._moon_progress()
-        ps = self._screen(GameScreen.PATROL)
         pace = self.cfg["pacing"]
-
-        # pick an interrupted patrol back up rather than abandoning the cats mid-event
-        data = ps.in_progress_data
-        if (
-            data
-            and data.get("patrol_stage") == "patrol_events"
-            and data.get("current_moon") == game.clan.age
-            and data.get("clan_name") == game.clan.name
-        ) or (game.current_screen == GameScreen.PATROL and ps.patrol_stage == "patrol_events"):
-            yield from self._goto(GameScreen.PATROL)
-            if ps.patrol_stage == "patrol_events":
-                self.caption = "the patrol continues"
-                yield from self._finish_patrol(ps)
-
         while True:
-            if prog["patrols_planned"] is not None and prog["patrols_done"] >= prog["patrols_planned"]:
-                break
-            ps.in_progress_data = None
-            if game.current_screen == GameScreen.PATROL and ps.patrol_stage == "patrol_complete":
-                self._press(ps.elements.get("patrol_again"))
-                yield Until(lambda: ps.patrol_stage == "choose_cats", 3)
-            else:
-                yield from self._goto(GameScreen.PATROL)
-                if ps.patrol_stage != "choose_cats":
-                    ps.open_choose_cats_screen()
-
-            able = list(ps.able_cats or [])
+            able = self._able_cats()
             if prog["patrols_planned"] is None:
                 prog["patrols_planned"] = brain.patrol_count(
                     len(able), int(pace["min_patrols"]), int(pace["max_patrols"])
                 )
             if prog["patrols_done"] >= prog["patrols_planned"]:
-                break
-
+                return
+            prog["patrols_done"] += 1
             patrol_type, members = brain.plan_patrol(able)
             if not members:
                 prog["patrols_planned"] = prog["patrols_done"]
-                break
+                return
+            yield from self._run_patrol(patrol_type, members)
+            yield from self._scene_idle(random.uniform(4, 8))
 
-            self.caption = f"choosing cats for a {_PATROL_LABELS.get(patrol_type, 'patrol')}"
-            yield Wait(1.5)
-            for cat in members:
-                ps.selected_cat = cat
-                ps.update_selected_cat()
-                ps.update_button()
-                yield Wait(1.0)
-                if cat not in ps.current_patrol and len(ps.current_patrol) < 6:
-                    self._press(ps.elements.get("add_remove_cat"))
-                    yield Until(lambda c=cat: c in ps.current_patrol, 2)
-                yield Wait(0.4)
+    def _run_patrol(self, patrol_type: str, members: list):
+        label = _PATROL_LABELS.get(patrol_type, "patrol")
+        lead = members[0]
+        ids = [c.ID for c in members]
 
-            if not ps.current_patrol:
-                prog["patrols_done"] += 1
-                continue
+        # gather by the camp entrance, then head out
+        self.caption = f"{lead.name} gathers a {label}"
+        hub = self.camp.hub
+        meet = (hub[0], hub[1] + 60)
+        acts = self.camp.gather(ids, meet, radius=26)
+        yield Until(lambda: self.camp.arrived(acts), 12)
+        self._say(lead, random.choice(_PATROL_CALLS.get(patrol_type, _PATROL_CALLS["general"])), 3.5)
+        yield Wait(2.5)
 
-            type_buttons = {"training": "paw", "border": "claws", "hunting": "mouse", "med": "herb"}
-            if ps.patrol_type != patrol_type:
-                # buttons toggle, so pressing the active one returns to a general patrol
-                if patrol_type in type_buttons:
-                    button = type_buttons[patrol_type]
-                elif ps.patrol_type in type_buttons and ps.patrol_type != "med":
-                    button = type_buttons[ps.patrol_type]
-                else:
-                    button = None
-                if button and self._press(ps.elements.get(button)):
-                    yield Wait(1.2)
-            yield Wait(0.8)
+        patrol = Patrol()
+        job = self._job(patrol.begin_patrol, members, patrol_type)
+        self.camp.leave(ids)
+        self.caption = f"the {label} sets out"
+        yield Until(lambda: job.done, 30)
+        if job.error is not None or not job.result:
+            if job.error is not None and not isinstance(job.error, RuntimeError):
+                logger.error("Autoplay patrol failed to start: %r", job.error)
+            self.camp.come_back(ids)
+            return
+        self._patrol = (patrol, label)
+        yield Wait(3)
 
-            if not self._press(ps.elements.get("patrol_start")):
-                prog["patrols_done"] += 1
-                continue
-            self.caption = f"the {_PATROL_LABELS.get(ps.patrol_type, 'patrol')} sets out"
-            started = Until(
-                lambda: ps.patrol_stage == "patrol_events" or game.current_screen != GameScreen.PATROL,
-                30,
-            )
-            yield started
-            prog["patrols_done"] += 1
-            if game.current_screen != GameScreen.PATROL or not started.ok:
-                continue
-            yield from self._finish_patrol(ps)
+        # the tale, told while they're away
+        header = label[0].upper() + label[1:]
+        intro = clean_text(job.result)
+        try:
+            art = patrol.get_patrol_art()
+        except Exception:
+            art = None
+        self.overlay.show_card(
+            Card(text=intro, header=header, accent=(96, 110, 70), cats=members, art=art, style="major",
+                 duration=self._read(intro, 5) + 1)
+        )
+        while self.overlay.card is not None and not self.overlay.card.done:
+            yield Wait(0.1)
+        self.overlay.clear_card()
 
-        if game.current_screen == GameScreen.PATROL:
-            ps.in_progress_data = None
-            if not self._press(ps.elements.get("clan_return")):
-                self._go(GameScreen.CAMP)
-            yield Until(lambda: game.current_screen == GameScreen.CAMP and not game.switch_screens, 5)
-
-
-    def _finish_patrol(self, ps):
-        """Read the patrol intro, make the call, and read the outcome."""
-        pace = self.cfg["pacing"]
-        yield Until(lambda: "proceed" in ps.elements, 2)
-
-        yield Wait(self._read(ps.display_text, pace["reading_cps"], 5))
-        antag = ps.elements.get("antagonize")
-        can_antag = bool(antag is not None and antag.visible)
-        choice = brain.decide_patrol(ps.patrol_obj, can_antag)
-        button_name, verb = {
-            PatrolChoice.PROCEED: ("proceed", "presses on"),
-            PatrolChoice.DECLINE: ("not_proceed", "turns back"),
-            PatrolChoice.ANTAGONIZE: ("antagonize", "picks a fight"),
+        can_antag = bool(getattr(patrol.patrol_event, "antag_success_outcomes", None))
+        choice = brain.decide_patrol(patrol, can_antag)
+        verb = {
+            PatrolChoice.PROCEED: "presses on",
+            PatrolChoice.DECLINE: "turns back",
+            PatrolChoice.ANTAGONIZE: "picks a fight",
         }[choice]
         self.caption = f"the patrol {verb}"
-        if not self._press(ps.elements.get(button_name)):
-            self._press(ps.elements.get("proceed"))
-        yield Until(lambda: ps.patrol_stage == "patrol_complete", 30)
-        result = clean_text(ps.results_text or "")
-        if result:
-            self.panels.add(_PATROL_LABELS.get(ps.patrol_type, "patrol").capitalize(), result, (96, 110, 70))
-        yield Wait(
-            self._read(f"{ps.display_text} {ps.results_text}", pace["reading_cps"], 5) + 1
+        job = self._job(patrol.proceed_patrol, choice)
+        yield Until(lambda: job.done, 30)
+        self._patrol = None
+        if job.error is not None:
+            logger.error("Autoplay patrol failed: %r", job.error)
+            self.camp.come_back(ids)
+            return
+        text, results, _, outcome_art = job.result
+        yield Wait(0.6)
+        yield from self._show(
+            Card(
+                text=clean_text(text),
+                header=f"{header}: {verb}",
+                accent=(96, 110, 70),
+                cats=members,
+                art=outcome_art if outcome_art is not None else art,
+                footer=clean_text(results or ""),
+                style="major",
+                duration=self._read(f"{text} {results}", 5) + 1,
+            )
         )
+
+        # home again (whoever made it), plus anyone they brought back
+        self.caption = f"the {label} returns"
+        back = self.camp.come_back(ids)
+        self.camp.refresh_roster()
+        yield Until(lambda: self.camp.arrived(back), 12)
 
     # ---------------------------------------------------------------- timeskip
 
     def _scene_timeskip(self):
-        yield from self._goto(GameScreen.EVENTS)
-        es = self._screen(GameScreen.EVENTS)
-        self.caption = "the moon wanes"
-        yield Wait(2.0)
+        self.caption = "dusk falls over camp"
+        self._close_windows()
+        self.camp.bed_down()
+        self.camp.night_target = 1.0
+        yield Wait(5)
 
-        self._close_windows()  # a stray dialog would swallow the timeskip click
         if not get_clan_setting("deputy") and not game.clan.deputy:
             # with no player to appoint one, a deputy-less clan can't survive its leader
             set_clan_setting("deputy", True)
         snapshot = story.ClanSnapshot.take()
-        old_thread = es.events_thread
-        if not self._press(es.timeskip_button, pygame_gui.UI_BUTTON_PRESSED):
-            yield Wait(2.0)
-            return
+
+        camp = self._screen(GameScreen.CAMP)
+        if game.current_screen == GameScreen.CAMP:
+            # the season can flip mid-timeskip; "default" always tracks the current one
+            camp.active_blur_bg = "default"
 
         self.critical = True
         try:
             self.caption = "a moon passes..."
-            began = Until(lambda: es.events_thread is not old_thread, 5)
-            yield began
-            if not began.ok:
-                # something (a dialog?) swallowed the click; don't replay the old moon
-                self.caption = "waiting..."
-                yield Wait(2.0)
-                return
-            yield Until(
-                lambda: es.events_thread is not None
-                and not es.events_thread.is_alive()
-                and "work_thread" not in es.work_done,
-                300,
-            )
-            # timeskip_done() runs in EventsScreen.on_use the frame the thread finishes
-            yield Wait(0.2)
+            job = self._job(events.one_moon)
+            yield Until(lambda: job.done, 600)
         finally:
             self.critical = False
+        if job.error is not None:
+            raise job.error
+        self._after_timeskip()
 
         moon = story.diff(snapshot)
         pace, st = self.cfg["pacing"], self.cfg["story"]
@@ -727,16 +790,43 @@ class Director:
             float(pace["card_min_seconds"]),
             int(st["card_min_importance"]),
         )
-        self.pending_headline = story.headline_cat(moon)
+        self.camp.refresh_roster(newborn_ids=moon.born)
 
         if self.cfg["autoplay"]["save_every_moon"] and get_living_clan_cat_count(Cat) > 0:
             try:
-                es.save_button.save_game(current_screen=es)
+                camp = self._screen(GameScreen.CAMP)
+                camp.save_button.save_game(current_screen=camp)
             except Exception:
                 logger.exception("Autoplay save failed")
 
+        yield Wait(1.5)
         self.caption = "a new moon rises"
-        yield Wait(3.5)  # let the viewer glance at the event log
+        self.camp.night_target = 0.0
+        yield Wait(2.5)
+        self.camp.wake()
+
+    def _after_timeskip(self):
+        """What EventsScreen.timeskip_done does that matters outside the events screen."""
+        from scripts.screens.screens_core.screens_core import rebuild_moon_n_season_indicator
+
+        switch_set_value(Switch.saved_scroll_positions, {})
+        switch_set_value(Switch.saved_page_positions, {})
+        on_camp = game.current_screen == GameScreen.CAMP
+        try:
+            rebuild_moon_n_season_indicator(change_moon=True, visible=on_camp)
+        except Exception:
+            logger.exception("Autoplay: moon indicator rebuild failed")
+        try:
+            game.audio.check(should_fade_out=True)
+        except AttributeError:
+            pass
+        if on_camp:
+            camp = self._screen(GameScreen.CAMP)
+            # swap the season backdrop without set_bg's screen-entry fade
+            if game.clan.current_season in camp.game_bgs:
+                camp.active_bg = game.clan.current_season
+                camp.active_blur_bg = "default"
+            camp.save_button.update_state()
 
     # ---------------------------------------------------------------- endings
 
@@ -745,16 +835,15 @@ class Director:
         if game.clan is not None:
             name, age = str(game.clan.name), game.clan.age
             self.caption = "the clan is no more"
-            card = Card(
-                text=f"After {age} moons, the last of {name} are gone.\nStarClan remembers them.",
-                header=f"The End of {name}",
-                style="title",
-                duration=9,
+            self.camp.night_target = 1.0
+            yield from self._show(
+                Card(
+                    text=f"After {age} moons, the last of {name} are gone.\nStarClan remembers them.",
+                    header=f"The End of {name}",
+                    style="title",
+                    duration=9,
+                )
             )
-            self.overlay.show_card(card)
-            while not card.done:
-                yield Wait(0.1)
-            self.overlay.clear_card()
 
         if not self.cfg["autoplay"]["restart_on_game_over"]:
             self.mode = "off"
@@ -769,6 +858,9 @@ class Director:
         if found_random_clan(self.cfg["autoplay"]["new_clan_mode"]):
             self.progress = {}
             self.panels.clear()
+            self.camp.detach()
+            self.camp.night_target = 0.0
+            self.camp.night = 0.0
             self.pending_cards = self._founding_cards()
             self._go(GameScreen.CAMP)
             yield Until(lambda: game.current_screen == GameScreen.CAMP and not game.switch_screens, 5)

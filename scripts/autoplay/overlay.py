@@ -124,6 +124,8 @@ class Card:
     style: str = "major"  # "major", "minor" or "title"
     duration: float = 5.0
     age: float = 0.0
+    art: Optional[pygame.Surface] = None  # patrol art, shown instead of sprites
+    footer: str = ""  # smaller line under the text (patrol results)
 
     FADE = 0.45
 
@@ -144,6 +146,7 @@ class Bubble:
     text: str
     duration: float = 4.0
     age: float = 0.0
+    follow: object = None  # a UI element to stay above while it moves
 
     @property
     def alpha(self) -> int:
@@ -268,8 +271,16 @@ class Overlay:
         bubble.set_alpha(b.alpha)
 
         sw, sh = surface.get_size()
-        x = b.rect.centerx - w // 2
-        y = b.rect.top - bubble.get_height() + _s(6)
+        rect = b.rect
+        if b.follow is not None:
+            try:
+                if not b.follow.alive() or not b.follow.visible:
+                    return
+                rect = b.follow.rect
+            except AttributeError:
+                pass
+        x = rect.centerx - w // 2
+        y = rect.top - bubble.get_height() + _s(6)
         x = max(_s(4), min(x, sw - w - _s(4)))
         y = max(_s(4), y)
         surface.blit(bubble, (x, y))
@@ -290,7 +301,10 @@ class Overlay:
         w = 620 if major else 540
         sprite_size = 76 if major else 44
         n_sprites = min(len(card.cats), 3 if major else 2)
-        text_x = 24 + (sprite_size + 6) * n_sprites + (8 if n_sprites else 0)
+        art_size = 120 if card.art is not None else 0
+        if art_size:
+            n_sprites = 0
+        text_x = 24 + (sprite_size + 6) * n_sprites + (8 if n_sprites else 0) + (art_size + 14 if art_size else 0)
         text_w = w - text_x - 24
         body_font = fonts.get("regular", 15 if major else 13)
         header_font = fonts.get("title", 20 if major else 14)
@@ -302,8 +316,12 @@ class Overlay:
             lines[-1] = lines[-1].rstrip(".,;: ") + "…"
         line_h = body_font.get_linesize()
         header_h = header_font.get_linesize() if card.header else 0
+        foot_font = fonts.get("italic", 12)
+        foot_lines = wrap(card.footer, foot_font, _s(text_w))[:3] if card.footer else []
         text_h = header_h + _s(4) + line_h * len(lines)
-        h_scaled = max(text_h, _s(sprite_size)) + _s(36)
+        if foot_lines:
+            text_h += _s(6) + foot_font.get_linesize() * len(foot_lines)
+        h_scaled = max(text_h, _s(sprite_size if n_sprites else 0), _s(art_size)) + _s(36)
         h = int(h_scaled / screen_settings.screen_scale) + 1
 
         surf = _box(w, h)
@@ -312,6 +330,11 @@ class Overlay:
                 surf, card.accent, pygame.Rect(_s(14), _s(16), _s(5), h_scaled - _s(32)), border_radius=_s(3)
             )
 
+        if art_size:
+            art = pygame.transform.smoothscale(card.art, (_s(art_size), _s(art_size)))
+            ay = (h_scaled - art.get_height()) // 2
+            surf.blit(art, (_s(24), ay))
+            pygame.draw.rect(surf, (120, 96, 64), (_s(24), ay, art.get_width(), art.get_height()), max(1, _s(2)))
         x = _s(24)
         for cat in card.cats[:n_sprites]:
             spr = _sprite(cat, sprite_size)
@@ -326,6 +349,11 @@ class Overlay:
         for line in lines:
             surf.blit(body_font.render(line, True, pal["text"]), (_s(text_x), y))
             y += line_h
+        if foot_lines:
+            y += _s(6)
+            for line in foot_lines:
+                surf.blit(foot_font.render(line, True, pal["muted"]), (_s(text_x), y))
+                y += foot_font.get_linesize()
 
         x0 = (800 - w) / 2
         y0 = 636 - h  # sits just above the camp's save button

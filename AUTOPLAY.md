@@ -8,22 +8,28 @@ Launch it and the clan simply lives: no menus, no clicking. Leave it open and wa
 
 ## What it does
 
-Every moon, the director plays the game through the real screens, so all of ClanGen's
-own logic runs exactly as if a person were clicking:
+The camp stays on screen and the clan lives in it. Cats wander between their dens,
+kits play together, apprentices tag along after their mentors, mates share tongues,
+the medicine cat checks on the sick, and every so often a cat's thought floats above
+its head. You can click any cat, even mid-stride, to open its profile.
 
-1. **Camp.** The camp sits on screen while cats' thoughts pop up above their heads.
-2. **Leadership.** Sometimes the leader changes the clan focus (hunting when prey is
-   short, herbs when the store is low, rest when many cats are hurt, raids or aid
-   depending on the leader's personality). Sometimes they visit the leader's den to
-   befriend or provoke another clan, or deal with an outsider.
-3. **Patrols.** One to three patrols, chosen by need. Hunting goes up when prey is low,
-   border patrols when relations sour, training when there are apprentices. Mates and
-   mentor pairs like to go out together. Whether a patrol proceeds, turns back or picks
-   a fight follows the patrol's own temperament.
-4. **Timeskip.** Presses the real "Timeskip One Moon" button and saves the clan.
-5. **The story.** The moon's events are told as cards over the camp. Deaths, births,
-   ceremonies and new leaders get full cards, while minor events get small ones. The
-   moon's headline cat then gets a short profile spotlight.
+Everything you'd normally do through menus happens as a scene in camp. Under the
+hood it calls the same game code the menus use, so the simulation is ClanGen's own.
+
+1. **Dawn.** The moon's events are told as cards. The cats each story is about walk
+   into the clearing and are ringed in gold while it's told, and the leader steps up
+   for ceremonies.
+2. **The leader's word.** Sometimes the leader climbs to their den and announces a
+   decision: a new clan focus (hunting when prey is short, herbs when the store is
+   low, rest when many cats are hurt, raids or aid depending on their personality),
+   a stance toward another clan, or what to do about an outsider.
+3. **Patrols.** One to three a moon, chosen by need. The patrol gathers near the
+   clearing, someone calls them out, and they walk out of camp. Their story is told
+   with the patrol art while they're away, and whether they press on, turn back or
+   pick a fight follows their temperament. Then whoever made it walks back in, along
+   with anyone they brought home.
+4. **Dusk.** The cats head to their dens, night falls over camp, and the moon passes.
+   New kits appear in the nursery, and the clan is saved.
 
 New clans are founded automatically (on first launch, or when a clan dies out).
 
@@ -57,7 +63,7 @@ The status pill in the bottom-left corner shows what the director is doing.
 
 ## Settings
 
-Edit `autoplay.toml` to change pacing, idle timeout, new-clan game mode, spotlights
+Edit `autoplay.toml` to change pacing, idle timeout, new-clan game mode, display
 and more. Set `CLANGEN_AUTOPLAY=0` in the environment to launch as plain ClanGen.
 
 ## Code
@@ -65,7 +71,9 @@ and more. Set `CLANGEN_AUTOPLAY=0` in the environment to launch as plain ClanGen
 Everything lives in `scripts/autoplay/` and is wired into `main.py` with a handful of hooks:
 
 - `director.py`: the scene state machine and input hand-off
-- `brain.py`: the decisions (patrol plans, patrol choices, focus, leader's den)
+- `brain.py`: what to decide (patrol plans, patrol choices, focus, leader's den stance)
+- `camp_life.py`: the cats moving around camp (wandering, social visits, gathering, patrols leaving)
+- `leader_actions.py`: focus and leader's-den decisions, applied without opening the dens
 - `story.py`: diffs the clan across a timeskip and turns events into cards
 - `overlay.py`: draws cards, thought bubbles, the HUD and click ripples
 - `panels.py`: the widescreen side panels (chronicle and clan overview)

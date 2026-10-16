@@ -25,7 +25,6 @@ DEFAULTS = {
         "card_min_seconds": 4.5,
     },
     "story": {
-        "profile_spotlights": True,
         "card_min_importance": 2,
     },
     "display": {

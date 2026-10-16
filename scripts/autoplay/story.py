@@ -2,7 +2,7 @@
 
 Before a timeskip we snapshot the clan; afterwards we diff against it to find out
 who died, who was born, who changed rank and who fell in love. That lets us pick
-headers, importance and the moon's headline cat reliably, without parsing the
+headers and importance reliably, without parsing the
 event prose.
 """
 
@@ -134,34 +134,6 @@ def classify(event, moon: MoonDiff) -> tuple[str, tuple, int]:
     if "health" in types:
         return "Health", BLUE, 1
     return "Clan Life", BROWN, 1
-
-
-def headline_cat(moon: MoonDiff) -> tuple[Optional[Cat], str]:
-    """The single most story-worthy cat this moon, plus a short caption."""
-    if moon.new_leader:
-        cat = Cat.fetch_cat(moon.new_leader)
-        return cat, f"All hail {cat.name}, the new leader"
-    dead = _cats(moon.died)
-    if dead:
-        ranked = sorted(
-            dead,
-            key=lambda c: (
-                c.status.rank in (CatRank.LEADER, CatRank.DEPUTY, CatRank.MEDICINE_CAT),
-                c.moons,
-            ),
-            reverse=True,
-        )
-        return ranked[0], f"Remembering {ranked[0].name}"
-    born = _cats(moon.born)
-    if born:
-        return born[0], f"Welcome, {born[0].name}"
-    joined = _cats(moon.joined)
-    if joined:
-        return joined[0], f"{joined[0].name} joins the clan"
-    if moon.new_deputy:
-        cat = Cat.fetch_cat(moon.new_deputy)
-        return cat, f"{cat.name} becomes deputy"
-    return None, ""
 
 
 def reading_time(text: str, cps: float, minimum: float) -> float:
