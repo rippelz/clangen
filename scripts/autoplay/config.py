@@ -27,6 +27,10 @@ DEFAULTS = {
     "story": {
         "card_min_importance": 2,
     },
+    "history": {
+        "new_clan_moons": 24,
+        "skip_moons": 12,
+    },
     "display": {
         "mode": "fullscreen",
         "window_size": [1600, 900],
@@ -35,6 +39,7 @@ DEFAULTS = {
         "toggle": "f6",
         "speed": "f7",
         "skip": "f8",
+        "fast_forward": "f9",
     },
 }
 

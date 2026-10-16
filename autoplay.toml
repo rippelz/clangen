@@ -32,6 +32,13 @@ card_min_seconds = 4.5
 # Events below this importance get a small card instead of a full one (1-3).
 card_min_importance = 2
 
+[history]
+# Moons fast-forwarded when autoplay founds a clan, so it starts with some lore
+# (births, deaths, leaders) already in the Chronicle. 0 starts from moon 0.
+new_clan_moons = 24
+# Moons skipped when you press the fast-forward hotkey.
+skip_moons = 12
+
 [display]
 # "fullscreen": fill the monitor (16:9 or whatever it is), story panels in the side margins.
 # "window": a widescreen window of window_size. "classic": ClanGen's own 800x700 window.
@@ -40,7 +47,9 @@ mode = "fullscreen"
 window_size = [1600, 900]
 
 [hotkeys]
-# F6 toggles autoplay, F7 cycles speed, F8 skips the current scene.
+# F6 toggles autoplay, F7 cycles speed, F8 skips the current scene,
+# F9 fast-forwards [history] skip_moons moons.
 toggle = "f6"
 speed = "f7"
 skip = "f8"
+fast_forward = "f9"

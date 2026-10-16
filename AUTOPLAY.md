@@ -33,6 +33,15 @@ hood it calls the same game code the menus use, so the simulation is ClanGen's o
 
 New clans are founded automatically (on first launch, or when a clan dies out).
 
+## History
+
+A new clan doesn't start from nothing. Autoplay fast-forwards its first 24 moons with
+the same game code (timeskips, patrols, the leader's decisions), just without the
+scenes. Births, deaths, new leaders and newcomers are written into the Chronicle as
+backstory, and a "Story So Far" card sums it up before normal play begins. Press F9
+any time to skip another 12 moons the same way. Both numbers are in `[history]` in
+`autoplay.toml`.
+
 ## Screen
 
 ClanGen's layout is a fixed 800x700, so autoplay opens fullscreen and scales the game
@@ -57,6 +66,7 @@ it left off. It never yanks you out of clan creation or settings.
 | F6 | Toggle autoplay on/off |
 | F7 | Cycle speed: 0.5x, 1x, 2x, 4x |
 | F8 | Skip the current card or pause |
+| F9 | Fast-forward 12 moons |
 | F11 | Fullscreen / window |
 
 While you have control, a pill in the bottom-left corner counts down to autoplay resuming.

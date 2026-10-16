@@ -20,7 +20,7 @@ from scripts.game_structure import game
 from scripts.game_structure.game.settings import game_setting_get
 
 MIN_MARGIN = 230  # screen pixels; narrower margins get no panels
-MAX_ENTRIES = 60
+MAX_ENTRIES = 150
 
 
 @dataclass

@@ -151,6 +151,8 @@ class Director:
         self.progress = {}
         self.jobs: list[_Job] = []
         self._patrol = None  # (Patrol, label) begun but not yet resolved
+        self.history_left = 0  # moons still to fast-forward
+        self._history = None  # running tally for the "story so far" card
         self._last_thought_cat = None
         self._next_thought = 2.0
         self._last_shot = 0.0
@@ -171,6 +173,7 @@ class Director:
                 self.mode = "off"
                 return
             self.pending_cards = self._founding_cards()
+            self.history_left = int(self.cfg["history"]["new_clan_moons"])
         else:
             self.pending_cards = [story.title_card()]
         self._go(GameScreen.CAMP)
@@ -182,6 +185,8 @@ class Director:
         self.progress = {}
         self.panels.clear()
         self.camp.detach()
+        self.history_left = 0
+        self._history = None
 
     def observe_event(self, event):
         hk = self.cfg["hotkeys"]
@@ -196,6 +201,13 @@ class Director:
                 return
             if name == hk["skip"]:
                 self._skip()
+                return
+            if name == hk.get("fast_forward") and game.clan is not None:
+                self.history_left += max(1, int(self.cfg["history"]["skip_moons"]))
+                if self.mode != "auto":
+                    self._resume()
+                elif not self.critical and self._history is None:
+                    self._drop_task()  # start the fast-forward now, not after this scene
                 return
         if event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN, pygame.MOUSEWHEEL, pygame.QUIT):
             self.last_input = time.monotonic()
@@ -476,6 +488,10 @@ class Director:
 
             if self.pending_cards:
                 yield from self._scene_story()
+                continue
+
+            if self.history_left > 0:
+                yield from self._scene_history()
                 continue
 
             prog = self._moon_progress()
@@ -828,6 +844,158 @@ class Director:
                 camp.active_blur_bg = "default"
             camp.save_button.update_state()
 
+    # ---------------------------------------------------------------- history
+
+    def _scene_history(self):
+        """Fast-forward whole moons so the clan has a past: the real timeskip, a
+        patrol or two and the odd leader decision each moon, with no scenes. The big
+        moments go into the Chronicle as backstory."""
+        clan = game.clan
+        if self._history is None:
+            self._history = {
+                "moons": 0,
+                "born": 0,
+                "died": 0,
+                "joined": 0,
+                "leader": clan.leader.ID if clan.leader else None,
+                "start": clan.age,
+            }
+        tally = self._history
+        total = tally["moons"] + self.history_left
+
+        self.caption = "the seasons turn"
+        self._close_windows()
+        self.camp.bed_down()
+        self.camp.night_target = 1.0
+        camp = self._screen(GameScreen.CAMP)
+        camp.active_blur_bg = "default"  # the season will change under us
+        yield Wait(1.5)
+
+        while self.history_left > 0 and get_living_clan_cat_count(Cat) > 0:
+            self.overlay.show_card(
+                Card(
+                    text=f"{clan.name}\nThe seasons turn... {tally['moons'] + 1} of {total}",
+                    header=f"Moon {clan.age + 1}",
+                    style="title",
+                    duration=3600,
+                )
+            )
+            yield from self._quiet_moon()
+            if not get_clan_setting("deputy") and not clan.deputy:
+                set_clan_setting("deputy", True)
+            snapshot = story.ClanSnapshot.take()
+
+            self.critical = True
+            try:
+                job = self._job(events.one_moon)
+                yield Until(lambda: job.done, 600)
+            finally:
+                self.critical = False
+            if job.error is not None:
+                raise job.error
+            self._after_timeskip()
+
+            moon = story.diff(snapshot)
+            tally["moons"] += 1
+            tally["born"] += len(moon.born)
+            tally["died"] += len(moon.died)
+            tally["joined"] += len(moon.joined)
+            pace = self.cfg["pacing"]
+            for card in story.build_moon_cards(
+                list(game.cur_events_list), moon, float(pace["reading_cps"]), 1, 3
+            ):
+                if card.style == "major":
+                    self.panels.add(card.header, card.text, card.accent, card.cats[0] if card.cats else None)
+            self.history_left -= 1
+            yield Wait(0.05)
+
+        self.overlay.clear_card()
+        self.history_left = 0
+        self._history = None
+        self.camp.refresh_roster()
+        if get_living_clan_cat_count(Cat) > 0:
+            try:
+                camp.save_button.save_game(current_screen=camp)
+            except Exception:
+                logger.exception("Autoplay save failed")
+            self.pending_cards = [self._story_so_far(tally), story.title_card()]
+        self.camp.night_target = 0.0
+        yield Wait(2.0)
+        self.camp.wake()
+
+    def _quiet_moon(self):
+        """The player's part of a moon, without the show: a decision and some patrols."""
+        leader = game.clan.leader
+        if leader is not None and leader.status.alive_in_player_clan and leader.can_work():
+            try:
+                has_meds = any(
+                    c.status.rank.is_any_medicine_rank() and c.status.alive_in_player_clan and c.can_work()
+                    for c in Cat.all_cats_list
+                )
+                if brain.focus_change_allowed() and random.random() < 0.4:
+                    code, target = brain.choose_focus(leader_actions.current_focus(), has_meds)
+                    if code:
+                        leader_actions.apply_focus(code, target)
+                if game.clan.all_other_clans and random.random() < 0.25:
+                    other = random.choice(game.clan.all_other_clans)
+                    leader_actions.clan_interaction(leader, other, brain.choose_clan_interaction(leader, other))
+                elif random.random() < 0.2:
+                    leader_actions.outsider_interaction(leader)
+            except Exception:
+                logger.exception("Autoplay: quiet leader decision failed")
+
+        pace = self.cfg["pacing"]
+        count = brain.patrol_count(len(self._able_cats()), int(pace["min_patrols"]), int(pace["max_patrols"]))
+        for _ in range(count):
+            patrol_type, members = brain.plan_patrol(self._able_cats())
+            if not members:
+                break
+            patrol = Patrol()
+            job = self._job(patrol.begin_patrol, members, patrol_type)
+            yield Until(lambda: job.done, 30)
+            if job.error is not None or not job.result:
+                continue
+            choice = brain.decide_patrol(
+                patrol, bool(getattr(patrol.patrol_event, "antag_success_outcomes", None))
+            )
+            job = self._job(patrol.proceed_patrol, choice)
+            yield Until(lambda: job.done, 30)
+
+    def _story_so_far(self, tally: dict) -> Card:
+        clan = game.clan
+        parts = [f"{tally['moons']} moons have passed"]
+        if tally["start"] == 0:
+            parts[0] += f" since {clan.name} was founded"
+        parts[0] += "."
+        bits = []
+        if tally["born"]:
+            bits.append(f"{tally['born']} kit{'s were' if tally['born'] != 1 else ' was'} born")
+        if tally["joined"]:
+            bits.append(f"{tally['joined']} cat{'s' if tally['joined'] != 1 else ''} joined")
+        if tally["died"]:
+            bits.append(f"{tally['died']} cat{'s' if tally['died'] != 1 else ''} died")
+        if bits:
+            parts.append((", ".join(bits[:-1]) + " and " + bits[-1] if len(bits) > 1 else bits[0]).capitalize() + ".")
+        leader = clan.leader
+        cats = []
+        if leader is not None and leader.status.alive_in_player_clan:
+            cats.append(leader)
+            if leader.ID != tally["leader"]:
+                parts.append(f"{leader.name} now leads the clan.")
+            else:
+                parts.append(f"{leader.name} still leads, with {clan.leader_lives} lives left.")
+        living = get_living_clan_cat_count(Cat)
+        parts.append(f"{living} cats call the camp home. Their story is in the Chronicle.")
+        text = " ".join(parts)
+        return Card(
+            text=text,
+            header="The Story So Far",
+            accent=story.GOLD,
+            cats=cats,
+            style="major",
+            duration=self._read(text, 7),
+        )
+
     # ---------------------------------------------------------------- endings
 
     def _scene_game_over(self):
@@ -862,6 +1030,8 @@ class Director:
             self.camp.night_target = 0.0
             self.camp.night = 0.0
             self.pending_cards = self._founding_cards()
+            self.history_left = int(self.cfg["history"]["new_clan_moons"])
+            self._history = None
             self._go(GameScreen.CAMP)
             yield Until(lambda: game.current_screen == GameScreen.CAMP and not game.switch_screens, 5)
         else:
