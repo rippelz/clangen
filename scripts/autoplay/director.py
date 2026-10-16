@@ -38,8 +38,10 @@ from scripts.autoplay import brain, leader_actions, story
 from scripts.autoplay.camp_life import CampLife
 from scripts.autoplay.clan_factory import found_random_clan
 from scripts.autoplay.config import load_config
+from scripts.autoplay import overlay as overlay_mod
 from scripts.autoplay.overlay import Card, Overlay, clean_text
 from scripts.autoplay.panels import Panels
+from scripts.autoplay.scenery import Scenery
 from scripts.cat.cats import Cat
 from scripts.cat.enums import CatRank
 from scripts.clan_package.get_clan_cats import get_living_clan_cat_count
@@ -133,8 +135,11 @@ class Director:
         self.speed = float(self.cfg["autoplay"]["speed"]) or 1.0
         self.idle_resume = float(self.cfg["autoplay"]["idle_resume_seconds"])
 
+        self.wallpaper = str(self.cfg["display"].get("style", "wallpaper")).lower() == "wallpaper"
+        overlay_mod.STYLE["wallpaper"] = self.wallpaper
         self.overlay = Overlay()
         self.panels = Panels()
+        self.scenery = Scenery()
         self.camp = CampLife()
         self.camp.say = self._actor_say
         self.mode = "auto" if self.enabled else "off"
@@ -227,6 +232,13 @@ class Director:
         elif not on_camp:
             self.camp.detach()
 
+        if on_camp and self._wallpaper_active():
+            self.scenery.hide_chrome(self._screen(GameScreen.CAMP))
+        elif on_camp:
+            self.scenery.restore_chrome(self._screen(GameScreen.CAMP))
+        else:
+            self.scenery.forget()
+
         if self.mode == "manual":
             idle = time.monotonic() - self.last_input
             if (
@@ -240,11 +252,28 @@ class Director:
                 self._advance(dt)
         self._refresh_hud()
 
+    def _wallpaper_active(self) -> bool:
+        return (
+            self.wallpaper
+            and self.mode == "auto"
+            and game.current_screen == GameScreen.CAMP
+            and not game.switch_screens
+        )
+
+    def draw_background(self, surface: pygame.Surface):
+        """Called right after the screen draws its background, before the UI."""
+        if self._wallpaper_active():
+            try:
+                self.scenery.draw_background(surface, self._screen(GameScreen.CAMP))
+            except Exception:
+                logger.exception("Autoplay: backdrop failed; falling back to the game look")
+                self.wallpaper = False
+
     def draw(self, surface: pygame.Surface):
-        self.panels.draw(surface, self.overlay.hud_text)
         on_camp = game.current_screen == GameScreen.CAMP and not game.switch_screens
         if on_camp:
-            self.camp.draw(surface)
+            self.camp.draw(surface, full_screen=self._wallpaper_active())
+        self.panels.draw(surface, self.overlay.hud_text)
         self.overlay.draw(surface, show_story=self.mode == "auto", show_bubbles=on_camp)
         if _SHOT_DIR:
             now = time.monotonic()

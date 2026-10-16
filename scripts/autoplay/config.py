@@ -33,6 +33,7 @@ DEFAULTS = {
     },
     "display": {
         "mode": "fullscreen",
+        "style": "wallpaper",
         "window_size": [1600, 900],
     },
     "hotkeys": {

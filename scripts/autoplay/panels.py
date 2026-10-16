@@ -13,7 +13,7 @@ import pygame
 
 import scripts.game_structure.screen_settings as screen_settings
 from scripts.autoplay import brain
-from scripts.autoplay.overlay import _palette, _sprite, fonts, wrap
+from scripts.autoplay.overlay import STYLE, _palette, _sprite, fonts, glass, lighten, wrap
 from scripts.cat.cats import Cat
 from scripts.clan_package.settings import get_clan_setting
 from scripts.game_structure import game
@@ -75,6 +75,8 @@ class Panels:
         surface.blit(self._right[1], (sw - margin + gap, top))
 
     def _panel(self, width: int, height: int) -> pygame.Surface:
+        if STYLE["wallpaper"]:
+            return glass(width, height, max(8, width // 22))
         dark = game_setting_dark()
         surf = pygame.Surface((width, height), pygame.SRCALPHA)
         fill = (32, 27, 20, 205) if dark else (236, 226, 202, 215)
@@ -120,9 +122,9 @@ class Panels:
             if y + need > bottom:
                 break
             bar_x = pad
-            pygame.draw.rect(surf, entry.accent, (bar_x, y + 2, max(2, pad // 4), need - 4), border_radius=2)
+            pygame.draw.rect(surf, lighten(entry.accent), (bar_x, y + 2, max(2, pad // 4), need - 4), border_radius=2)
             x = pad + pad // 2
-            surf.blit(head_font.render(entry.header, True, entry.accent), (x, y))
+            surf.blit(head_font.render(entry.header, True, lighten(entry.accent)), (x, y))
             y += head_font.get_linesize()
             for line in lines:
                 surf.blit(body_font.render(line, True, pal["text"]), (x, y))
@@ -213,9 +215,9 @@ class Panels:
             y += label_font.get_linesize()
             for other in clan.all_other_clans:
                 if other.name in hostile:
-                    mood, col = "hostile", (160, 60, 50)
+                    mood, col = "hostile", lighten((160, 60, 50))
                 elif other.name in friendly:
-                    mood, col = "friendly", (80, 130, 70)
+                    mood, col = "friendly", lighten((80, 130, 70))
                 else:
                     mood, col = "neutral", pal["muted"]
                 name = text_font.render(str(other.name), True, pal["text"])

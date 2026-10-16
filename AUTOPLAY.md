@@ -50,6 +50,12 @@ panels. The **Chronicle** on the left logs every story beat and patrol outcome, 
 by moon. On the right is an overview of the clan: season, head count, focus, needs, the
 leader, deputy and medicine cat, and how the neighbouring clans feel about you.
 
+While autoplay is running, the screen is styled as a wallpaper. The game's buttons,
+den labels and frame are hidden. The camp fades softly into a blurred, full-screen
+copy of itself, and the cards, bubbles and panels are drawn as dark glass. Touch the
+mouse or keyboard and the normal game interface comes straight back. Set
+`[display] style = "game"` to keep ClanGen's normal look all the time.
+
 Set `[display] mode` in `autoplay.toml` to `"window"` for a widescreen window
 (`window_size`, 1600x900 by default) or `"classic"` for ClanGen's own 800x700 window.
 F11 switches between fullscreen and the window.
@@ -87,4 +93,5 @@ Everything lives in `scripts/autoplay/` and is wired into `main.py` with a handf
 - `story.py`: diffs the clan across a timeskip and turns events into cards
 - `overlay.py`: draws cards, thought bubbles, the HUD and click ripples
 - `panels.py`: the widescreen side panels (chronicle and clan overview)
+- `scenery.py`: the wallpaper look (hides the game interface, draws the soft backdrop)
 - `clan_factory.py`: founds random clans through the normal creation code

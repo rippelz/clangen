@@ -479,13 +479,17 @@ class CampLife:
 
     # ------------------------------------------------------------ drawing
 
-    def draw(self, surface: pygame.Surface):
+    def draw(self, surface: pygame.Surface, full_screen: bool = False):
         if self.camp is None:
             return
         s = screen_settings.screen_scale
         ox, oy = screen_settings.offset
         if self.night > 0.01:
-            tint = pygame.Surface((int(800 * s), int(700 * s)), pygame.SRCALPHA)
+            if full_screen:
+                tint = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+                ox = oy = 0
+            else:
+                tint = pygame.Surface((int(800 * s), int(700 * s)), pygame.SRCALPHA)
             tint.fill((12, 16, 44, int(150 * self.night)))
             surface.blit(tint, (ox, oy))
         for a in self.actors.values():

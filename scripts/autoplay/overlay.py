@@ -78,7 +78,36 @@ def wrap(text: str, font: pygame.font.Font, max_width: int) -> list[str]:
     return lines
 
 
+# "wallpaper" draws everything as quiet dark glass; "game" matches ClanGen's parchment
+STYLE = {"wallpaper": False}
+
+GLASS = (16, 14, 11, 178)
+GLASS_EDGE = (255, 244, 220, 38)
+
+
+def lighten(colour, amount=0.45) -> tuple:
+    """Accent colours are picked for parchment; lift them so they read on dark glass."""
+    if not STYLE["wallpaper"]:
+        return colour
+    return tuple(int(c + (255 - c) * amount) for c in colour[:3])
+
+
+def glass(w_px: int, h_px: int, radius: Optional[int] = None) -> pygame.Surface:
+    surf = pygame.Surface((w_px, h_px), pygame.SRCALPHA)
+    r = _s(12) if radius is None else radius
+    pygame.draw.rect(surf, GLASS, surf.get_rect(), border_radius=r)
+    pygame.draw.rect(surf, GLASS_EDGE, surf.get_rect(), 1, border_radius=r)
+    return surf
+
+
 def _palette():
+    if STYLE["wallpaper"]:
+        return {
+            "box": None,
+            "text": (240, 232, 214),
+            "muted": (186, 176, 156),
+            "shadow": (0, 0, 0),
+        }
     dark = game_setting_get("dark mode")
     if dark:
         return {
@@ -96,6 +125,8 @@ def _palette():
 
 
 def _box(w: int, h: int) -> pygame.Surface:
+    if STYLE["wallpaper"]:
+        return glass(_s(w), _s(h))
     try:
         return get_box(_palette()["box"], (w, h)).copy()
     except Exception:  # theme assets missing: draw a plain panel instead
@@ -253,8 +284,11 @@ class Overlay:
         h = name_img.get_height() + sum(i.get_height() for i in body_imgs) + pad * 2
         bubble = pygame.Surface((w, h + _s(8)), pygame.SRCALPHA)
         body_rect = pygame.Rect(0, 0, w, h)
-        bg = (247, 240, 222, 240) if pal["box"] == BoxStyles.ROUNDED_BOX else (58, 50, 38, 240)
-        edge = (120, 96, 64, 255)
+        if STYLE["wallpaper"]:
+            bg, edge = GLASS, GLASS_EDGE
+        else:
+            bg = (247, 240, 222, 240) if pal["box"] == BoxStyles.ROUNDED_BOX else (58, 50, 38, 240)
+            edge = (120, 96, 64, 255)
         pygame.draw.rect(bubble, bg, body_rect, border_radius=_s(10))
         pygame.draw.rect(bubble, edge, body_rect, max(1, _s(2)), border_radius=_s(10))
         tail_x = w // 2
@@ -328,7 +362,7 @@ class Overlay:
         surf = _box(w, h)
         if card.header:
             pygame.draw.rect(
-                surf, card.accent, pygame.Rect(_s(14), _s(16), _s(5), h_scaled - _s(32)), border_radius=_s(3)
+                surf, lighten(card.accent), pygame.Rect(_s(14), _s(16), _s(5), h_scaled - _s(32)), border_radius=_s(3)
             )
 
         if art_size:
@@ -345,7 +379,7 @@ class Overlay:
 
         y = (h_scaled - text_h) // 2
         if card.header:
-            surf.blit(header_font.render(card.header, True, card.accent), (_s(text_x), y))
+            surf.blit(header_font.render(card.header, True, lighten(card.accent)), (_s(text_x), y))
             y += header_h + _s(4)
         for line in lines:
             surf.blit(body_font.render(line, True, pal["text"]), (_s(text_x), y))
@@ -357,7 +391,8 @@ class Overlay:
                 y += foot_font.get_linesize()
 
         x0 = (800 - w) / 2
-        y0 = 636 - h  # sits just above the camp's save button
+        # sits just above the camp's save button (nothing to dodge in wallpaper style)
+        y0 = (684 if STYLE["wallpaper"] else 636) - h
         return surf, _pos(x0, y0)
 
     def _render_title(self, card: Card, pal):

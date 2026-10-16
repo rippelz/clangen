@@ -44,6 +44,9 @@ skip_moons = 12
 # "window": a widescreen window of window_size. "classic": ClanGen's own 800x700 window.
 # F11 still switches between fullscreen and the window.
 mode = "fullscreen"
+# "wallpaper": while autoplay runs, hide the game's buttons and frame and let the camp
+# melt into the screen. "game": keep ClanGen's normal look.
+style = "wallpaper"
 window_size = [1600, 900]
 
 [hotkeys]

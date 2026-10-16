@@ -203,6 +203,7 @@ while 1:
     # Draw screens
     # This occurs before events are handled to stop pygame_gui buttons from blinking.
     game.all_screens[game.current_screen].on_use()
+    director.draw_background(screen)
     # EVENTS
     for event in pygame.event.get():
         director.observe_event(event)
