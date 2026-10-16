@@ -28,6 +28,10 @@ DEFAULTS = {
         "profile_spotlights": True,
         "card_min_importance": 2,
     },
+    "display": {
+        "mode": "fullscreen",
+        "window_size": [1600, 900],
+    },
     "hotkeys": {
         "toggle": "f6",
         "speed": "f7",
@@ -65,3 +69,41 @@ def load_config() -> dict:
         cfg["autoplay"]["enabled"] = env.strip().lower() not in ("0", "false", "off")
 
     return cfg
+
+
+def _display() -> tuple[bool, str, list]:
+    cfg = load_config()
+    mode = str(cfg["display"]["mode"]).lower()
+    if os.environ.get("CLANGEN_AUTOPLAY_WINDOW"):
+        mode = "window"
+    return cfg["autoplay"]["enabled"], mode, cfg["display"]["window_size"]
+
+
+def boot_fullscreen(saved: bool) -> bool:
+    """Whether the game should open fullscreen."""
+    enabled, mode, _ = _display()
+    if not enabled or mode not in ("fullscreen", "window"):
+        return saved
+    return mode == "fullscreen"
+
+
+def display_override() -> "tuple[int, int] | None":
+    """Size for a widescreen window laid out like fullscreen, or None for ClanGen's 800x700."""
+    enabled, mode, size = _display()
+    if not enabled or mode == "classic":
+        return None
+    import pygame
+
+    forced = os.environ.get("CLANGEN_AUTOPLAY_WINDOW")  # e.g. 1920x1080, for testing
+    if forced:
+        w, h = (int(v) for v in forced.lower().split("x"))
+        return w, h
+    try:
+        w, h = int(size[0]), int(size[1])
+    except (TypeError, ValueError, IndexError):
+        w, h = 1600, 900
+    desk = pygame.display.get_desktop_sizes() or [(w, h)]
+    dw, dh = desk[0]
+    # leave room for panels/decorations on smaller screens
+    fit = min(1.0, (dw * 0.95) / w, (dh * 0.9) / h)
+    return max(800, int(w * fit)), max(700, int(h * fit))

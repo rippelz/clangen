@@ -73,7 +73,14 @@ def set_display_mode(
     if source_screen is not None:
         curr_variable_dict = source_screen.display_change_save()
 
-    if fullscreen:
+    # Auto Life: optionally run as a widescreen window laid out like fullscreen
+    from scripts.autoplay.config import display_override
+
+    window_size = None if fullscreen else display_override()
+    if window_size is not None:
+        determine_screen_scale(*window_size)
+        screen = pygame.display.set_mode(window_size)
+    elif fullscreen:
         display_sizes = pygame.display.get_desktop_sizes()  # the primary display
         screen_config["fullscreen_display"] = (
             screen_config["fullscreen_display"]

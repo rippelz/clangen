@@ -135,23 +135,12 @@ class ClanScreen(Screens):
                         blend_layer, self.layout["cat_shading"]["blur"]
                     )
                 except ValueError:
-                    x_diff = ui_scale_value(
-                        50 + (x.placement[0] if x.placement[0] < 0 else 0)
-                    )
-                    y_diff = ui_scale_value(
-                        50 + (x.placement[1] if x.placement[1] < 0 else 0)
-                    )
-                    avg_layer = self.game_bgs[self.active_bg].subsurface(
-                        ui_scale(
-                            pygame.Rect(
-                                (
-                                    x.placement[0] if x.placement[0] > 0 else 0,
-                                    x.placement[1] if x.placement[1] > 0 else 0,
-                                ),
-                                (x_diff, y_diff),
-                            )
-                        )
-                    )
+                    # sprite hangs off the background edge: average the visible part
+                    bg = self.game_bgs[self.active_bg]
+                    visible = ui_scale(
+                        pygame.Rect(tuple(x.placement), (50, 50))
+                    ).clip(bg.get_rect())
+                    avg_layer = bg.subsurface(visible) if visible.size != (0, 0) else bg
                     blend_layer = pygame.Surface(ui_scale_dimensions((50, 50)))
                     blend_layer.fill(pygame.transform.average_color(avg_layer))
 

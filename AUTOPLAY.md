@@ -27,6 +27,18 @@ own logic runs exactly as if a person were clicking:
 
 New clans are founded automatically (on first launch, or when a clan dies out).
 
+## Screen
+
+ClanGen's layout is a fixed 800x700, so autoplay opens fullscreen and scales the game
+to the monitor's full height. On a 16:9 screen, the spare width either side holds two
+panels. The **Chronicle** on the left logs every story beat and patrol outcome, grouped
+by moon. On the right is an overview of the clan: season, head count, focus, needs, the
+leader, deputy and medicine cat, and how the neighbouring clans feel about you.
+
+Set `[display] mode` in `autoplay.toml` to `"window"` for a widescreen window
+(`window_size`, 1600x900 by default) or `"classic"` for ClanGen's own 800x700 window.
+F11 switches between fullscreen and the window.
+
 ## Interacting
 
 Just use the game. Any click, scroll or key press hands control to you right away, so
@@ -39,6 +51,7 @@ it left off. It never yanks you out of clan creation or settings.
 | F6 | Toggle autoplay on/off |
 | F7 | Cycle speed: 0.5x, 1x, 2x, 4x |
 | F8 | Skip the current card or pause |
+| F11 | Fullscreen / window |
 
 The status pill in the bottom-left corner shows what the director is doing.
 
@@ -55,4 +68,5 @@ Everything lives in `scripts/autoplay/` and is wired into `main.py` with a handf
 - `brain.py`: the decisions (patrol plans, patrol choices, focus, leader's den)
 - `story.py`: diffs the clan across a timeskip and turns events into cards
 - `overlay.py`: draws cards, thought bubbles, the HUD and click ripples
+- `panels.py`: the widescreen side panels (chronicle and clan overview)
 - `clan_factory.py`: founds random clans through the normal creation code

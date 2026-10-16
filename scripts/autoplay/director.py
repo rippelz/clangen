@@ -30,7 +30,8 @@ import scripts.game_structure.screen_settings as screen_settings
 from scripts.autoplay import brain, story
 from scripts.autoplay.clan_factory import found_random_clan
 from scripts.autoplay.config import load_config
-from scripts.autoplay.overlay import Bubble, Card, Overlay
+from scripts.autoplay.overlay import Bubble, Card, Overlay, clean_text
+from scripts.autoplay.panels import Panels
 from scripts.cat.cats import Cat
 from scripts.cat.enums import CatRank
 from scripts.clan_package.get_clan_cats import get_living_clan_cat_count
@@ -100,6 +101,7 @@ class Director:
         self.idle_resume = float(self.cfg["autoplay"]["idle_resume_seconds"])
 
         self.overlay = Overlay()
+        self.panels = Panels()
         self.mode = "auto" if self.enabled else "off"
         self.last_input = 0.0
 
@@ -143,6 +145,7 @@ class Director:
         self.pending_cards.clear()
         self.pending_headline = (None, "")
         self.progress = {}
+        self.panels.clear()
 
     def observe_event(self, event):
         hk = self.cfg["hotkeys"]
@@ -165,6 +168,7 @@ class Director:
 
     def update(self, dt: float):
         self.overlay.update(dt * self.speed if self.mode == "auto" else dt)
+        self.panels.update(dt)
 
         if self.mode == "manual":
             idle = time.monotonic() - self.last_input
@@ -180,6 +184,7 @@ class Director:
         self._refresh_hud()
 
     def draw(self, surface: pygame.Surface):
+        self.panels.draw(surface, self.overlay.hud_text)
         self.overlay.draw(
             surface,
             show_story=self.mode == "auto",
@@ -432,6 +437,8 @@ class Director:
         while self.pending_cards:
             card = self.pending_cards.pop(0)
             self.overlay.show_card(card)
+            if card.style != "title":
+                self.panels.add(card.header, card.text, card.accent, card.cats[0] if card.cats else None)
             while not card.done:
                 yield Wait(0.1)
             self.overlay.clear_card()
@@ -665,6 +672,9 @@ class Director:
         if not self._press(ps.elements.get(button_name)):
             self._press(ps.elements.get("proceed"))
         yield Until(lambda: ps.patrol_stage == "patrol_complete", 30)
+        result = clean_text(ps.results_text or "")
+        if result:
+            self.panels.add(_PATROL_LABELS.get(ps.patrol_type, "patrol").capitalize(), result, (96, 110, 70))
         yield Wait(
             self._read(f"{ps.display_text} {ps.results_text}", pace["reading_cps"], 5) + 1
         )
@@ -758,6 +768,7 @@ class Director:
             yield from self._goto(GameScreen.EVENTS)
         if found_random_clan(self.cfg["autoplay"]["new_clan_mode"]):
             self.progress = {}
+            self.panels.clear()
             self.pending_cards = self._founding_cards()
             self._go(GameScreen.CAMP)
             yield Until(lambda: game.current_screen == GameScreen.CAMP and not game.switch_screens, 5)

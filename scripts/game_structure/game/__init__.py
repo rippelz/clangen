@@ -224,8 +224,10 @@ def reset_used_group_IDs():
 
 pygame.display.set_caption("Clan Generator")
 
+from scripts.autoplay.config import boot_fullscreen
+
 toggle_fullscreen(
-    fullscreen=game_setting_get("fullscreen"),
+    fullscreen=boot_fullscreen(game_setting_get("fullscreen")),
     show_confirm_dialog=False,
     ingame_switch=False,
 )
