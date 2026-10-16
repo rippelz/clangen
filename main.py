@@ -34,6 +34,7 @@ from scripts.screens import all_screens
 from scripts.screens.enums import GameScreen
 from scripts.ui.windows.save_check import SaveCheckWindow
 from scripts.housekeeping.quit_game import quit_game
+from scripts.autoplay.director import director
 
 # P Y G A M E
 clock = pygame.time.Clock()
@@ -178,6 +179,9 @@ load_game()
 
 all_screens.get_screen(GameScreen.START).screen_switches()
 
+# Auto Life: skip the menu and let the director take it from here
+director.boot()
+
 # dev screen info now lives in scripts/screens/screens_core
 
 fps = switch_get_value(Switch.fps)
@@ -194,12 +198,14 @@ while 1:
         load_game()
         # have to manually reload errors because it only happens when screen is switched to
         game.all_screens[GameScreen.START].reload_errors()
+        director.on_clan_loaded()
 
     # Draw screens
     # This occurs before events are handled to stop pygame_gui buttons from blinking.
     game.all_screens[game.current_screen].on_use()
     # EVENTS
     for event in pygame.event.get():
+        director.observe_event(event)
         if event.type == INPUT_ACTION_PRESSED and debug_mode.debug_menu.visible:
             pass
         else:
@@ -274,10 +280,13 @@ while 1:
         all_screens.get_screen(game.current_screen.replace(" ", "_")).screen_switches()
         game.switch_screens = False
 
+    director.update(time_delta)
+
     debug_mode.pre_update(clock)
     # END FRAME
 
     MANAGER.draw_ui(screen)
+    director.draw(screen)
 
     debug_mode.post_update(screen)
 
