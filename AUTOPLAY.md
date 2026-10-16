@@ -59,7 +59,7 @@ it left off. It never yanks you out of clan creation or settings.
 | F8 | Skip the current card or pause |
 | F11 | Fullscreen / window |
 
-The status pill in the bottom-left corner shows what the director is doing.
+While you have control, a pill in the bottom-left corner counts down to autoplay resuming.
 
 ## Settings
 

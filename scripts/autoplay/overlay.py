@@ -222,7 +222,8 @@ class Overlay:
         surface.blit(surf, (r.pos[0] - radius - 2, r.pos[1] - radius - 2))
 
     def _draw_hud(self, surface):
-        if not self.hud_text:
+        # only shown when the player has the wheel, so the watched camp stays clean
+        if not self.hud_text or self.hud_mode == "auto":
             return
         font = fonts.get("bold", 11)
         dot = {"auto": (110, 200, 110), "manual": (235, 190, 80), "off": (170, 170, 170)}[
